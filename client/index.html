@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <title>SHTORM</title>
+
+  <link rel="stylesheet" href="./style.css">
+
+</head>
+
+<body>
+
+  <div class="app">
+
+    <h1>🌩️ SHTORM</h1>
+
+    <p id="roomText"></p>
+
+    <!-- USERNAME -->
+    <div class="topBar">
+
+      <input
+        id="usernameInput"
+        placeholder="Your name"
+      />
+
+    </div>
+
+    <!-- CONTROLS -->
+    <div class="controls">
+
+  <button id="muteBtn">Mute</button>
+  <button id="cameraBtn">Camera</button>
+  <button id="screenBtn">Screen</button>
+  <button id="copyBtn">Copy Link</button>
+
+</div>
+
+    <!-- VIDEOS -->
+    <div class="videos">
+
+      <div class="videoCard">
+
+        <span id="localName">
+          You
+        </span>
+
+        <video
+          id="localVideo"
+          autoplay
+          muted
+          playsinline
+        ></video>
+
+      </div>
+
+      <div class="videoCard">
+
+        <span id="remoteName">
+          Remote User
+        </span>
+
+        <video
+          id="remoteVideo"
+          autoplay
+          playsinline
+        ></video>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script type="module" src="./main.js"></script>
+
+</body>
+</html>
