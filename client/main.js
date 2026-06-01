@@ -47,7 +47,28 @@ if (!roomId) {
 
 roomText.innerText = roomId;
 
-// INIT PC
+// =====================
+// SAFE START (FIXED)
+// =====================
+async function start() {
+  if (started) return;
+  started = true;
+
+  log("START INIT");
+
+  if (!pc) createPC();
+  await getMedia();
+
+  if (!joined) {
+    socket.emit("join-room", roomId);
+    joined = true;
+    log("JOINED", roomId);
+  }
+}
+
+// =====================
+// PEER CONNECTION
+// =====================
 function createPC() {
   if (pc) return;
 
@@ -74,7 +95,9 @@ function createPC() {
   };
 }
 
-// GET MEDIA
+// =====================
+// MEDIA
+// =====================
 async function getMedia() {
   if (localStream) return;
 
@@ -92,24 +115,12 @@ async function getMedia() {
   log("MEDIA READY");
 }
 
-// START (FIXED)
-async function start() {
-  if (started) return;
-  started = true;
-
-  if (!pc) createPC();
-  await getMedia();
-
-  if (!joined) {
-    socket.emit("join-room", roomId);
-    joined = true;
-    log("JOINED", roomId);
-  }
-}
-
-// SOCKET
+// =====================
+// SOCKET EVENTS
+// =====================
 socket.on("connect", () => {
   log("CONNECTED");
+  start(); // auto start once
 });
 
 socket.on("ready-to-call", async () => {
@@ -117,6 +128,8 @@ socket.on("ready-to-call", async () => {
 
   if (isCaller) return;
   isCaller = true;
+
+  log("CREATE OFFER");
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -159,7 +172,9 @@ function flush() {
   pending = [];
 }
 
+// =====================
 // CONTROLS
+// =====================
 muteBtn.onclick = () => {
   localStream.getAudioTracks()[0].enabled =
     !localStream.getAudioTracks()[0].enabled;
@@ -174,6 +189,9 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
+// =====================
+// SCREEN SHARE
+// =====================
 screenBtn.onclick = async () => {
   screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
@@ -199,5 +217,5 @@ screenBtn.onclick = async () => {
   };
 };
 
-// BOOT
+// BOOT FIX
 document.addEventListener("click", start, { once: true });
