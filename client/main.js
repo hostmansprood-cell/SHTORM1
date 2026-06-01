@@ -2,11 +2,10 @@ const socket = window.io();
 
 const log = (...args) => console.log("[SHTORM]", ...args);
 
-// errors
 window.onerror = (m) => log("JS ERROR:", m);
 window.onunhandledrejection = (e) => log("PROMISE:", e.reason);
 
-// UI
+// ================= UI =================
 const muteBtn = document.getElementById("muteBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -16,19 +15,22 @@ const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const roomText = document.getElementById("roomText");
 
-// STATE
+// ================= STATE =================
 let pc;
 let localStream;
 let screenStream;
 
-let joined = false;
+let isCaller = false;
 let started = false;
-let isMakingOffer = false;
-let polite = false;
+let joined = false;
 
-let pendingCandidates = [];
+let pendingIce = [];
 
-// ICE
+// защита от дублей
+let makingOffer = false;
+let ignoreOffer = false;
+
+// ================= ICE =================
 const config = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -40,7 +42,7 @@ const config = {
   ]
 };
 
-// ROOM
+// ================= ROOM =================
 let roomId = new URLSearchParams(location.search).get("room");
 
 if (!roomId) {
@@ -113,89 +115,67 @@ socket.on("connect", () => {
   start();
 });
 
-// only 2 peers logic
 socket.on("ready-to-call", async () => {
   await start();
 
-  if (isMakingOffer) return;
-  isMakingOffer = true;
+  if (isCaller) return;
+  isCaller = true;
 
-  try {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+  log("CREATE OFFER");
 
-    socket.emit("offer", { roomId, offer });
-    log("OFFER SENT");
-  } catch (e) {
-    log("OFFER ERROR:", e);
-  } finally {
-    isMakingOffer = false;
-  }
+  makingOffer = true;
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  socket.emit("offer", { roomId, offer });
+  makingOffer = false;
 });
 
-// OFFER HANDLER (FIXED PERFECTLY)
 socket.on("offer", async (offer) => {
   await start();
 
-  const offerCollision = pc.signalingState !== "stable";
+  if (makingOffer) return;
 
-  polite = true;
+  ignoreOffer = pc.signalingState !== "stable";
 
-  if (offerCollision && !polite) {
-    log("OFFER COLLISION IGNORED");
+  if (ignoreOffer) {
+    log("IGNORE OFFER:", pc.signalingState);
     return;
   }
 
-  try {
-    await pc.setRemoteDescription(offer);
+  await pc.setRemoteDescription(offer);
 
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
 
-    socket.emit("answer", { roomId, answer });
-    log("ANSWER SENT");
+  socket.emit("answer", { roomId, answer });
 
-    flush();
-  } catch (e) {
-    log("OFFER ERROR:", e);
-  }
+  flush();
 });
 
-// ANSWER HANDLER (FIXED)
 socket.on("answer", async (answer) => {
-  try {
-    if (pc.signalingState !== "have-local-offer") {
-      log("IGNORE ANSWER STATE:", pc.signalingState);
-      return;
-    }
+  if (pc.signalingState !== "have-local-offer") return;
 
-    await pc.setRemoteDescription(answer);
-    flush();
-  } catch (e) {
-    log("ANSWER ERROR:", e);
-  }
+  await pc.setRemoteDescription(answer);
+
+  flush();
 });
 
-// ICE
 socket.on("ice-candidate", async (c) => {
-  try {
-    const ice = new RTCIceCandidate(c);
+  const ice = new RTCIceCandidate(c);
 
-    if (pc.remoteDescription) {
-      await pc.addIceCandidate(ice);
-    } else {
-      pendingCandidates.push(ice);
-    }
-  } catch (e) {
-    log("ICE ERROR:", e);
+  if (pc.remoteDescription) {
+    await pc.addIceCandidate(ice);
+  } else {
+    pendingIce.push(ice);
   }
 });
 
 function flush() {
-  for (const c of pendingCandidates) {
+  for (const c of pendingIce) {
     pc.addIceCandidate(c).catch(log);
   }
-  pendingCandidates = [];
+  pendingIce = [];
 }
 
 // ================= CONTROLS =================
@@ -213,12 +193,9 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
-// SCREEN SHARE (FIXED NO DOUBLE CAMERA REQUEST)
 screenBtn.onclick = async () => {
   if (!screenStream) {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({
-      video: true
-    });
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
     const track = screenStream.getVideoTracks()[0];
 
@@ -245,11 +222,11 @@ async function stopScreen() {
   sender?.replaceTrack(track);
 
   screenStream?.getTracks().forEach(t => t.stop());
-
   screenStream = null;
+
   localStream = cam;
   localVideo.srcObject = cam;
 }
 
-// BOOT FIX
+// ================= BOOT =================
 document.addEventListener("click", start, { once: true });
