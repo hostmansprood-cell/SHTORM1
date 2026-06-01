@@ -16,8 +16,6 @@ let localStream;
 let screenStream;
 
 let isCaller = false;
-let remoteReady = false;
-
 let pendingCandidates = [];
 
 const config = {
@@ -47,55 +45,85 @@ if (!roomId) {
 
 roomText.innerText = `Room: ${roomId}`;
 
-// INIT MEDIA
+// --------------------
+// INIT MEDIA + PC
+// --------------------
 async function initMedia() {
-  localStream = await navigator.mediaDevices.getUserMedia({
-    video: true,
-    audio: true
-  });
+  if (!peerConnection) {
+    peerConnection = new RTCPeerConnection(config);
 
-  localVideo.srcObject = localStream;
+    // 🔥 DEBUG
+    peerConnection.oniceconnectionstatechange = () => {
+      console.log("ICE:", peerConnection.iceConnectionState);
+    };
 
-  peerConnection = new RTCPeerConnection(config);
+    peerConnection.onconnectionstatechange = () => {
+      console.log("CONNECTION:", peerConnection.connectionState);
+    };
 
-  peerConnection.onicecandidate = (e) => {
-    if (e.candidate) {
-      socket.emit("ice-candidate", { roomId, candidate: e.candidate });
-    }
-  };
+    peerConnection.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit("ice-candidate", {
+          roomId,
+          candidate: e.candidate
+        });
+      }
+    };
 
-  peerConnection.ontrack = (e) => {
-    remoteVideo.srcObject = e.streams[0];
-  };
+    peerConnection.ontrack = (e) => {
+      remoteVideo.srcObject = e.streams[0];
+    };
+  }
 
-  localStream.getTracks().forEach(t => {
-    peerConnection.addTrack(t, localStream);
-  });
+  if (!localStream) {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+
+    localVideo.srcObject = localStream;
+
+    localStream.getTracks().forEach(t => {
+      peerConnection.addTrack(t, localStream);
+    });
+  }
 }
 
-// SOCKET
+// --------------------
+// SOCKET FLOW FIXED
+// --------------------
+socket.emit("join-room", roomId);
+
 socket.on("ready-to-call", async () => {
   await initMedia();
-  socket.emit("join-ready", roomId);
+
+  // 🔥 только один инициатор
+  if (isCaller) return;
+  isCaller = true;
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+
+  socket.emit("offer", { roomId, offer });
 });
 
 socket.on("offer", async (offer) => {
-
-  if (!peerConnection) await initMedia();
+  await initMedia();
 
   await peerConnection.setRemoteDescription(offer);
+
+  remoteReady = true;
+
+  // 🔥 apply ICE queue
+  for (const c of pendingCandidates) {
+    await peerConnection.addIceCandidate(c);
+  }
+  pendingCandidates = [];
 
   const answer = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answer);
 
   socket.emit("answer", { roomId, answer });
-
-  remoteReady = true;
-
-  for (const c of pendingCandidates) {
-    await peerConnection.addIceCandidate(c);
-  }
-  pendingCandidates = [];
 });
 
 socket.on("answer", async (answer) => {
@@ -108,34 +136,22 @@ socket.on("answer", async (answer) => {
 });
 
 socket.on("ice-candidate", async (c) => {
-  const ice = new RTCIceCandidate(c);
+  try {
+    const ice = new RTCIceCandidate(c);
 
-  if (peerConnection?.remoteDescription) {
-    await peerConnection.addIceCandidate(ice);
-  } else {
-    pendingCandidates.push(ice);
+    if (peerConnection?.remoteDescription) {
+      await peerConnection.addIceCandidate(ice);
+    } else {
+      pendingCandidates.push(ice);
+    }
+  } catch (e) {
+    console.error("ICE ERROR:", e);
   }
 });
 
-// JOIN
-socket.emit("join-room", roomId);
-
-// CALL TRIGGER
-socket.on("ready-to-call", async () => {
-
-  if (!isCaller) {
-    isCaller = true;
-
-    await initMedia();
-
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-
-    socket.emit("offer", { roomId, offer });
-  }
-});
-
+// --------------------
 // CONTROLS
+// --------------------
 muteBtn.onclick = () => {
   localStream.getAudioTracks()[0].enabled =
     !localStream.getAudioTracks()[0].enabled;
@@ -150,10 +166,11 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
-// SCREEN SHARE FIXED
+// --------------------
+// SCREEN SHARE FIX
+// --------------------
 screenBtn.onclick = async () => {
   if (!screenStream) {
-
     screenStream = await navigator.mediaDevices.getDisplayMedia({
       video: true
     });
@@ -174,7 +191,6 @@ screenBtn.onclick = async () => {
 };
 
 async function stopScreen() {
-
   const cam = await navigator.mediaDevices.getUserMedia({
     video: true,
     audio: true
@@ -194,4 +210,5 @@ async function stopScreen() {
   localVideo.srcObject = cam;
 }
 
+// START
 initMedia();
