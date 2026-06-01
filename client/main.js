@@ -2,10 +2,11 @@ const socket = window.io();
 
 const log = (...args) => console.log("[SHTORM]", ...args);
 
+// errors
 window.onerror = (m) => log("JS ERROR:", m);
 window.onunhandledrejection = (e) => log("PROMISE:", e.reason);
 
-// ================= UI =================
+// UI
 const muteBtn = document.getElementById("muteBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -15,22 +16,32 @@ const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const roomText = document.getElementById("roomText");
 
-// ================= STATE =================
+// STATE
 let pc;
 let localStream;
 let screenStream;
 
-let isCaller = false;
-let started = false;
 let joined = false;
+let started = false;
+let isCaller = false;
 
 let pendingIce = [];
 
-// защита от дублей
+// IMPORTANT FIX
 let makingOffer = false;
 let ignoreOffer = false;
 
-// ================= ICE =================
+// ROOM
+let roomId = new URLSearchParams(location.search).get("room");
+
+if (!roomId) {
+  roomId = Math.random().toString(36).slice(2, 8);
+  location.search = `?room=${roomId}`;
+}
+
+roomText.innerText = roomId;
+
+// ICE
 const config = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -42,17 +53,7 @@ const config = {
   ]
 };
 
-// ================= ROOM =================
-let roomId = new URLSearchParams(location.search).get("room");
-
-if (!roomId) {
-  roomId = Math.random().toString(36).slice(2, 8);
-  location.search = `?room=${roomId}`;
-}
-
-roomText.innerText = roomId;
-
-// ================= PEER =================
+// CREATE PEER
 function createPC() {
   if (pc) return;
 
@@ -60,10 +61,7 @@ function createPC() {
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
-      socket.emit("ice-candidate", {
-        roomId,
-        candidate: e.candidate
-      });
+      socket.emit("ice-candidate", { roomId, candidate: e.candidate });
     }
   };
 
@@ -74,9 +72,30 @@ function createPC() {
   pc.onconnectionstatechange = () => {
     log("STATE:", pc.connectionState);
   };
+
+  pc.onnegotiationneeded = async () => {
+    // SAFE negotiation control
+    try {
+      if (makingOffer) return;
+      if (pc.signalingState !== "stable") return;
+
+      makingOffer = true;
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      socket.emit("offer", { roomId, offer });
+
+      log("OFFER SENT");
+    } catch (e) {
+      log("NEGOTIATION ERROR:", e);
+    } finally {
+      makingOffer = false;
+    }
+  };
 }
 
-// ================= MEDIA =================
+// MEDIA
 async function getMedia() {
   if (localStream) return;
 
@@ -94,7 +113,7 @@ async function getMedia() {
   log("MEDIA READY");
 }
 
-// ================= START =================
+// START
 async function start() {
   if (started) return;
   started = true;
@@ -109,34 +128,24 @@ async function start() {
   }
 }
 
-// ================= SOCKET =================
+// SOCKET CONNECT
 socket.on("connect", () => {
   log("CONNECTED");
   start();
 });
 
-socket.on("ready-to-call", async () => {
-  await start();
-
-  if (isCaller) return;
+// SERVER READY
+socket.on("ready-to-call", () => {
   isCaller = true;
-
-  log("CREATE OFFER");
-
-  makingOffer = true;
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  socket.emit("offer", { roomId, offer });
-  makingOffer = false;
+  log("YOU ARE CALLER");
 });
 
+// OFFER
 socket.on("offer", async (offer) => {
   await start();
 
-  if (makingOffer) return;
-
-  ignoreOffer = pc.signalingState !== "stable";
+  const offerCollision = makingOffer || pc.signalingState !== "stable";
+  ignoreOffer = offerCollision;
 
   if (ignoreOffer) {
     log("IGNORE OFFER:", pc.signalingState);
@@ -150,35 +159,45 @@ socket.on("offer", async (offer) => {
 
   socket.emit("answer", { roomId, answer });
 
-  flush();
+  log("ANSWER SENT");
+
+  flushIce();
 });
 
+// ANSWER
 socket.on("answer", async (answer) => {
-  if (pc.signalingState !== "have-local-offer") return;
+  if (pc.signalingState !== "have-local-offer") {
+    log("IGNORE ANSWER STATE:", pc.signalingState);
+    return;
+  }
 
   await pc.setRemoteDescription(answer);
-
-  flush();
+  flushIce();
 });
 
+// ICE
 socket.on("ice-candidate", async (c) => {
-  const ice = new RTCIceCandidate(c);
+  try {
+    const ice = new RTCIceCandidate(c);
 
-  if (pc.remoteDescription) {
-    await pc.addIceCandidate(ice);
-  } else {
-    pendingIce.push(ice);
+    if (pc.remoteDescription) {
+      await pc.addIceCandidate(ice);
+    } else {
+      pendingIce.push(ice);
+    }
+  } catch (e) {
+    log("ICE ERROR:", e);
   }
 });
 
-function flush() {
+function flushIce() {
   for (const c of pendingIce) {
     pc.addIceCandidate(c).catch(log);
   }
   pendingIce = [];
 }
 
-// ================= CONTROLS =================
+// CONTROLS
 muteBtn.onclick = () => {
   localStream.getAudioTracks()[0].enabled =
     !localStream.getAudioTracks()[0].enabled;
@@ -193,6 +212,7 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
+// SCREEN SHARE FIXED
 screenBtn.onclick = async () => {
   if (!screenStream) {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -228,5 +248,5 @@ async function stopScreen() {
   localVideo.srcObject = cam;
 }
 
-// ================= BOOT =================
+// BOOT FIX
 document.addEventListener("click", start, { once: true });
