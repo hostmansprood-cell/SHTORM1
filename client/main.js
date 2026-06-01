@@ -5,7 +5,7 @@ const log = (...args) => console.log("[SHTORM]", ...args);
 window.onerror = (m) => log("JS ERROR:", m);
 window.onunhandledrejection = (e) => log("PROMISE:", e.reason);
 
-// UI
+// ================= UI =================
 const muteBtn = document.getElementById("muteBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -15,17 +15,21 @@ const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const roomText = document.getElementById("roomText");
 
-// STATE
+// ================= STATE =================
 let pc;
 let localStream;
 let screenStream;
 
 let isCaller = false;
-let joined = false;
 let started = false;
+let joined = false;
 let pending = [];
 
-// ICE
+// 🔥 IMPORTANT FIX FLAGS
+let makingOffer = false;
+let ignoreOffer = false;
+
+// ================= ICE =================
 const config = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -37,7 +41,7 @@ const config = {
   ]
 };
 
-// ROOM
+// ================= ROOM =================
 let roomId = new URLSearchParams(location.search).get("room");
 
 if (!roomId) {
@@ -47,35 +51,11 @@ if (!roomId) {
 
 roomText.innerText = roomId;
 
-// =====================
-// SAFE START (FIXED)
-// =====================
-async function start() {
-  if (started) return;
-  started = true;
-
-  log("START INIT");
-
-  if (!pc) createPC();
-  await getMedia();
-
-  if (!joined) {
-    socket.emit("join-room", roomId);
-    joined = true;
-    log("JOINED", roomId);
-  }
-}
-
-// =====================
-// PEER CONNECTION
-// =====================
+// ================= PEER =================
 function createPC() {
   if (pc) return;
 
-  pc = new RTCPeerConnection({
-    ...config,
-    iceCandidatePoolSize: 10
-  });
+  pc = new RTCPeerConnection(config);
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
@@ -95,9 +75,7 @@ function createPC() {
   };
 }
 
-// =====================
-// MEDIA
-// =====================
+// ================= MEDIA =================
 async function getMedia() {
   if (localStream) return;
 
@@ -115,12 +93,25 @@ async function getMedia() {
   log("MEDIA READY");
 }
 
-// =====================
-// SOCKET EVENTS
-// =====================
+// ================= START (SAFE) =================
+async function start() {
+  if (started) return;
+  started = true;
+
+  if (!pc) createPC();
+  await getMedia();
+
+  if (!joined) {
+    socket.emit("join-room", roomId);
+    joined = true;
+    log("JOINED", roomId);
+  }
+}
+
+// ================= SOCKET =================
 socket.on("connect", () => {
   log("CONNECTED");
-  start(); // auto start once
+  start();
 });
 
 socket.on("ready-to-call", async () => {
@@ -140,6 +131,12 @@ socket.on("ready-to-call", async () => {
 socket.on("offer", async (offer) => {
   await start();
 
+  // 🔥 FIX WRONG STATE
+  if (pc.signalingState !== "stable") {
+    log("IGNORED OFFER:", pc.signalingState);
+    return;
+  }
+
   await pc.setRemoteDescription(offer);
 
   const answer = await pc.createAnswer();
@@ -151,7 +148,14 @@ socket.on("offer", async (offer) => {
 });
 
 socket.on("answer", async (answer) => {
+  // 🔥 FIX WRONG STATE
+  if (pc.signalingState !== "have-local-offer") {
+    log("IGNORED ANSWER:", pc.signalingState);
+    return;
+  }
+
   await pc.setRemoteDescription(answer);
+
   flush();
 });
 
@@ -172,9 +176,7 @@ function flush() {
   pending = [];
 }
 
-// =====================
-// CONTROLS
-// =====================
+// ================= CONTROLS =================
 muteBtn.onclick = () => {
   localStream.getAudioTracks()[0].enabled =
     !localStream.getAudioTracks()[0].enabled;
@@ -189,9 +191,6 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
-// =====================
-// SCREEN SHARE
-// =====================
 screenBtn.onclick = async () => {
   screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
@@ -217,5 +216,5 @@ screenBtn.onclick = async () => {
   };
 };
 
-// BOOT FIX
+// BOOT
 document.addEventListener("click", start, { once: true });
