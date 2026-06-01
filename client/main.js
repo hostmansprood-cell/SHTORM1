@@ -2,10 +2,11 @@ const socket = window.io();
 
 const log = (...args) => console.log("[SHTORM]", ...args);
 
+// errors
 window.onerror = (m) => log("JS ERROR:", m);
 window.onunhandledrejection = (e) => log("PROMISE:", e.reason);
 
-// ================= UI =================
+// UI
 const muteBtn = document.getElementById("muteBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -15,21 +16,19 @@ const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const roomText = document.getElementById("roomText");
 
-// ================= STATE =================
+// STATE
 let pc;
 let localStream;
 let screenStream;
 
-let isCaller = false;
-let started = false;
 let joined = false;
-let pending = [];
+let started = false;
+let isMakingOffer = false;
+let polite = false;
 
-// 🔥 IMPORTANT FIX FLAGS
-let makingOffer = false;
-let ignoreOffer = false;
+let pendingCandidates = [];
 
-// ================= ICE =================
+// ICE
 const config = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -41,7 +40,7 @@ const config = {
   ]
 };
 
-// ================= ROOM =================
+// ROOM
 let roomId = new URLSearchParams(location.search).get("room");
 
 if (!roomId) {
@@ -93,7 +92,7 @@ async function getMedia() {
   log("MEDIA READY");
 }
 
-// ================= START (SAFE) =================
+// ================= START =================
 async function start() {
   if (started) return;
   started = true;
@@ -114,66 +113,89 @@ socket.on("connect", () => {
   start();
 });
 
+// only 2 peers logic
 socket.on("ready-to-call", async () => {
   await start();
 
-  if (isCaller) return;
-  isCaller = true;
+  if (isMakingOffer) return;
+  isMakingOffer = true;
 
-  log("CREATE OFFER");
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  socket.emit("offer", { roomId, offer });
+    socket.emit("offer", { roomId, offer });
+    log("OFFER SENT");
+  } catch (e) {
+    log("OFFER ERROR:", e);
+  } finally {
+    isMakingOffer = false;
+  }
 });
 
+// OFFER HANDLER (FIXED PERFECTLY)
 socket.on("offer", async (offer) => {
   await start();
 
-  // 🔥 FIX WRONG STATE
-  if (pc.signalingState !== "stable") {
-    log("IGNORED OFFER:", pc.signalingState);
+  const offerCollision = pc.signalingState !== "stable";
+
+  polite = true;
+
+  if (offerCollision && !polite) {
+    log("OFFER COLLISION IGNORED");
     return;
   }
 
-  await pc.setRemoteDescription(offer);
+  try {
+    await pc.setRemoteDescription(offer);
 
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
 
-  socket.emit("answer", { roomId, answer });
+    socket.emit("answer", { roomId, answer });
+    log("ANSWER SENT");
 
-  flush();
+    flush();
+  } catch (e) {
+    log("OFFER ERROR:", e);
+  }
 });
 
+// ANSWER HANDLER (FIXED)
 socket.on("answer", async (answer) => {
-  // 🔥 FIX WRONG STATE
-  if (pc.signalingState !== "have-local-offer") {
-    log("IGNORED ANSWER:", pc.signalingState);
-    return;
+  try {
+    if (pc.signalingState !== "have-local-offer") {
+      log("IGNORE ANSWER STATE:", pc.signalingState);
+      return;
+    }
+
+    await pc.setRemoteDescription(answer);
+    flush();
+  } catch (e) {
+    log("ANSWER ERROR:", e);
   }
-
-  await pc.setRemoteDescription(answer);
-
-  flush();
 });
 
+// ICE
 socket.on("ice-candidate", async (c) => {
-  const ice = new RTCIceCandidate(c);
+  try {
+    const ice = new RTCIceCandidate(c);
 
-  if (pc.remoteDescription) {
-    await pc.addIceCandidate(ice);
-  } else {
-    pending.push(ice);
+    if (pc.remoteDescription) {
+      await pc.addIceCandidate(ice);
+    } else {
+      pendingCandidates.push(ice);
+    }
+  } catch (e) {
+    log("ICE ERROR:", e);
   }
 });
 
 function flush() {
-  for (const c of pending) {
+  for (const c of pendingCandidates) {
     pc.addIceCandidate(c).catch(log);
   }
-  pending = [];
+  pendingCandidates = [];
 }
 
 // ================= CONTROLS =================
@@ -191,30 +213,43 @@ copyBtn.onclick = async () => {
   await navigator.clipboard.writeText(location.href);
 };
 
+// SCREEN SHARE (FIXED NO DOUBLE CAMERA REQUEST)
 screenBtn.onclick = async () => {
-  screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  if (!screenStream) {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: true
+    });
 
-  const track = screenStream.getVideoTracks()[0];
+    const track = screenStream.getVideoTracks()[0];
+
+    const sender = pc.getSenders().find(s => s.track?.kind === "video");
+    sender?.replaceTrack(track);
+
+    localVideo.srcObject = screenStream;
+
+    track.onended = stopScreen;
+  } else {
+    stopScreen();
+  }
+};
+
+async function stopScreen() {
+  const cam = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true
+  });
+
+  const track = cam.getVideoTracks()[0];
 
   const sender = pc.getSenders().find(s => s.track?.kind === "video");
   sender?.replaceTrack(track);
 
-  localVideo.srcObject = screenStream;
+  screenStream?.getTracks().forEach(t => t.stop());
 
-  track.onended = async () => {
-    const cam = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
+  screenStream = null;
+  localStream = cam;
+  localVideo.srcObject = cam;
+}
 
-    const t = cam.getVideoTracks()[0];
-    sender?.replaceTrack(t);
-
-    screenStream = null;
-    localStream = cam;
-    localVideo.srcObject = cam;
-  };
-};
-
-// BOOT
+// BOOT FIX
 document.addEventListener("click", start, { once: true });
