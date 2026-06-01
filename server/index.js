@@ -10,23 +10,28 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// STATIC CLIENT
 app.use(express.static(path.join(__dirname, "../client")));
 
-const rooms = new Map(); // roomId -> users count
+// room -> Set(socket.id)
+const rooms = new Map();
 
 io.on("connection", (socket) => {
 
   socket.on("join-room", (roomId) => {
+
     socket.join(roomId);
 
-    const count = (rooms.get(roomId) || 0) + 1;
-    rooms.set(roomId, count);
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, new Set());
+    }
 
-    console.log("JOIN:", roomId, "users:", count);
+    const room = rooms.get(roomId);
+    room.add(socket.id);
 
-    // второй пользователь запускает call flow
-    if (count === 2) {
+    console.log("JOIN:", roomId, "users:", room.size);
+
+    // 🔥 ВАЖНО: только когда 2 человека
+    if (room.size === 2) {
       io.to(roomId).emit("ready-to-call");
     }
   });
@@ -44,10 +49,15 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    for (const [roomId, count] of rooms.entries()) {
-      const newCount = Math.max(0, count - 1);
-      if (newCount === 0) rooms.delete(roomId);
-      else rooms.set(roomId, newCount);
+
+    for (const [roomId, room] of rooms.entries()) {
+      room.delete(socket.id);
+
+      if (room.size === 0) {
+        rooms.delete(roomId);
+      } else {
+        console.log("ROOM UPDATE:", roomId, "users:", room.size);
+      }
     }
   });
 });
