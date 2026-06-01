@@ -7,23 +7,35 @@ const path = require("path");
 const app = express();
 app.use(cors());
 
-// 👉 ВАЖНО: отдаём клиент
 app.use(express.static(path.join(__dirname, "../client")));
 
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*"
-  }
+  cors: { origin: "*" }
 });
 
-// socket logic
+// 👉 контролируем кто в комнате
+const rooms = {};
+
 io.on("connection", (socket) => {
 
   socket.on("join-room", (roomId) => {
+
     socket.join(roomId);
-    socket.to(roomId).emit("user-joined");
+
+    if (!rooms[roomId]) {
+      rooms[roomId] = [];
+    }
+
+    rooms[roomId].push(socket.id);
+
+    // 👉 если уже есть 1 человек — второй триггерит call
+    if (rooms[roomId].length === 2) {
+      io.to(rooms[roomId][0]).emit("ready-to-call");
+      io.to(rooms[roomId][1]).emit("ready-to-call");
+    }
+
   });
 
   socket.on("offer", (data) => {
@@ -38,9 +50,14 @@ io.on("connection", (socket) => {
     socket.to(data.roomId).emit("ice-candidate", data.candidate);
   });
 
+  socket.on("disconnect", () => {
+    for (const roomId in rooms) {
+      rooms[roomId] = rooms[roomId].filter(id => id !== socket.id);
+    }
+  });
+
 });
 
-// fallback (очень важно для Render)
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "../client/index.html"));
 });
