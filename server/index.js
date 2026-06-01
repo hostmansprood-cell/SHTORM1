@@ -26,11 +26,12 @@ io.on("connection", (socket) => {
     }
 
     const room = rooms.get(roomId);
+
+    // FIX: защита от дубля
     room.add(socket.id);
 
     console.log("JOIN:", roomId, "users:", room.size);
 
-    // 🔥 ВАЖНО: только когда 2 человека
     if (room.size === 2) {
       io.to(roomId).emit("ready-to-call");
     }
@@ -49,14 +50,13 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-
     for (const [roomId, room] of rooms.entries()) {
       room.delete(socket.id);
 
       if (room.size === 0) {
         rooms.delete(roomId);
       } else {
-        console.log("ROOM UPDATE:", roomId, "users:", room.size);
+        console.log("ROOM:", roomId, "users:", room.size);
       }
     }
   });

@@ -1,4 +1,4 @@
-const socket = io(); // теперь работает через CDN
+const socket = window.io();
 
 const log = (...args) => console.log("[SHTORM]", ...args);
 
@@ -19,8 +19,11 @@ const roomText = document.getElementById("roomText");
 let pc;
 let localStream;
 let screenStream;
-let pending = [];
+
 let isCaller = false;
+let joined = false;
+let started = false;
+let pending = [];
 
 // ICE
 const config = {
@@ -48,11 +51,17 @@ roomText.innerText = roomId;
 function createPC() {
   if (pc) return;
 
-  pc = new RTCPeerConnection(config);
+  pc = new RTCPeerConnection({
+    ...config,
+    iceCandidatePoolSize: 10
+  });
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
-      socket.emit("ice-candidate", { roomId, candidate: e.candidate });
+      socket.emit("ice-candidate", {
+        roomId,
+        candidate: e.candidate
+      });
     }
   };
 
@@ -83,13 +92,19 @@ async function getMedia() {
   log("MEDIA READY");
 }
 
-// START
+// START (FIXED)
 async function start() {
+  if (started) return;
+  started = true;
+
   if (!pc) createPC();
   await getMedia();
 
-  socket.emit("join-room", roomId);
-  log("JOINED", roomId);
+  if (!joined) {
+    socket.emit("join-room", roomId);
+    joined = true;
+    log("JOINED", roomId);
+  }
 }
 
 // SOCKET
