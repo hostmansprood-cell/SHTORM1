@@ -1,14 +1,11 @@
-import { io } from "./node_modules/socket.io-client/dist/socket.io.esm.min.js";
+const socket = io(); // теперь работает через CDN
 
-const socket = io();
-
-// =====================
 const log = (...args) => console.log("[SHTORM]", ...args);
 
-window.onerror = (m, s, l, c, e) => log("[JS ERROR]", m);
-window.onunhandledrejection = (e) => log("[PROMISE ERROR]", e.reason);
+window.onerror = (m) => log("JS ERROR:", m);
+window.onunhandledrejection = (e) => log("PROMISE:", e.reason);
 
-// ===================== UI
+// UI
 const muteBtn = document.getElementById("muteBtn");
 const cameraBtn = document.getElementById("cameraBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -18,16 +15,14 @@ const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 const roomText = document.getElementById("roomText");
 
-// =====================
-let peerConnection;
+// STATE
+let pc;
 let localStream;
 let screenStream;
-
+let pending = [];
 let isCaller = false;
-let started = false;
-let pendingCandidates = [];
 
-// ===================== ICE
+// ICE
 const config = {
   iceServers: [
     { urls: "stun:stun.l.google.com:19302" },
@@ -35,16 +30,11 @@ const config = {
       urls: "turn:global.relay.metered.ca:80",
       username: "364220d702b99621ed50afaf",
       credential: "1+Wf1HFsEI3FFw4w"
-    },
-    {
-      urls: "turns:global.relay.metered.ca:443",
-      username: "364220d702b99621ed50afaf",
-      credential: "1+Wf1HFsEI3FFw4w"
     }
   ]
 };
 
-// =====================
+// ROOM
 let roomId = new URLSearchParams(location.search).get("room");
 
 if (!roomId) {
@@ -52,85 +42,69 @@ if (!roomId) {
   location.search = `?room=${roomId}`;
 }
 
-roomText.innerText = `Room: ${roomId}`;
-log("ROOM:", roomId);
+roomText.innerText = roomId;
 
-// ===================== INIT PEER
-async function initPeer() {
-  if (peerConnection) return;
+// INIT PC
+function createPC() {
+  if (pc) return;
 
-  peerConnection = new RTCPeerConnection(config);
+  pc = new RTCPeerConnection(config);
 
-  peerConnection.oniceconnectionstatechange = () =>
-    log("ICE:", peerConnection.iceConnectionState);
-
-  peerConnection.onconnectionstatechange = () =>
-    log("CONNECTION:", peerConnection.connectionState);
-
-  peerConnection.onicecandidate = (e) => {
+  pc.onicecandidate = (e) => {
     if (e.candidate) {
-      socket.emit("ice-candidate", {
-        roomId,
-        candidate: e.candidate
-      });
+      socket.emit("ice-candidate", { roomId, candidate: e.candidate });
     }
   };
 
-  peerConnection.ontrack = (e) => {
-    log("REMOTE STREAM");
+  pc.ontrack = (e) => {
     remoteVideo.srcObject = e.streams[0];
+  };
+
+  pc.onconnectionstatechange = () => {
+    log("STATE:", pc.connectionState);
   };
 }
 
-// ===================== INIT MEDIA (FIXED)
-async function initMedia() {
-  await initPeer();
+// GET MEDIA
+async function getMedia() {
+  if (localStream) return;
 
-  if (!localStream) {
-    log("REQUEST CAMERA");
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true
+  });
 
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
+  localVideo.srcObject = localStream;
 
-    localVideo.srcObject = localStream;
+  localStream.getTracks().forEach(t => {
+    pc.addTrack(t, localStream);
+  });
 
-    localStream.getTracks().forEach(t => {
-      peerConnection.addTrack(t, localStream);
-    });
-
-    log("CAMERA READY");
-  }
+  log("MEDIA READY");
 }
 
-// ===================== START (🔥 FIX IMPORTANT)
+// START
 async function start() {
-  if (started) return;
-  started = true;
-
-  await initMedia();
+  if (!pc) createPC();
+  await getMedia();
 
   socket.emit("join-room", roomId);
-  log("JOINED ROOM");
+  log("JOINED", roomId);
 }
 
-// ===================== SOCKET
+// SOCKET
 socket.on("connect", () => {
-  log("SOCKET CONNECTED");
+  log("CONNECTED");
 });
 
-// server triggers
 socket.on("ready-to-call", async () => {
   await start();
 
   if (isCaller) return;
   isCaller = true;
 
-  log("CREATE OFFER");
-
-  const offer = await peerConnection.createOffer();
-  await peerConnection.setLocalDescription(offer);
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
 
   socket.emit("offer", { roomId, offer });
 });
@@ -138,10 +112,10 @@ socket.on("ready-to-call", async () => {
 socket.on("offer", async (offer) => {
   await start();
 
-  await peerConnection.setRemoteDescription(offer);
+  await pc.setRemoteDescription(offer);
 
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
 
   socket.emit("answer", { roomId, answer });
 
@@ -149,28 +123,28 @@ socket.on("offer", async (offer) => {
 });
 
 socket.on("answer", async (answer) => {
-  await peerConnection.setRemoteDescription(answer);
+  await pc.setRemoteDescription(answer);
   flush();
 });
 
 socket.on("ice-candidate", async (c) => {
   const ice = new RTCIceCandidate(c);
 
-  if (peerConnection?.remoteDescription) {
-    await peerConnection.addIceCandidate(ice);
+  if (pc.remoteDescription) {
+    await pc.addIceCandidate(ice);
   } else {
-    pendingCandidates.push(ice);
+    pending.push(ice);
   }
 });
 
 function flush() {
-  for (const c of pendingCandidates) {
-    peerConnection.addIceCandidate(c).catch(log);
+  for (const c of pending) {
+    pc.addIceCandidate(c).catch(log);
   }
-  pendingCandidates = [];
+  pending = [];
 }
 
-// ===================== CONTROLS
+// CONTROLS
 muteBtn.onclick = () => {
   localStream.getAudioTracks()[0].enabled =
     !localStream.getAudioTracks()[0].enabled;
@@ -186,42 +160,29 @@ copyBtn.onclick = async () => {
 };
 
 screenBtn.onclick = async () => {
-  if (!screenStream) {
-    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
-    const track = screenStream.getVideoTracks()[0];
+  const track = screenStream.getVideoTracks()[0];
 
-    const sender = peerConnection.getSenders()
-      .find(s => s.track?.kind === "video");
-
-    sender?.replaceTrack(track);
-
-    localVideo.srcObject = screenStream;
-
-    track.onended = stopScreen;
-  } else stopScreen();
-};
-
-async function stopScreen() {
-  const cam = await navigator.mediaDevices.getUserMedia({
-    video: true,
-    audio: true
-  });
-
-  const track = cam.getVideoTracks()[0];
-
-  const sender = peerConnection.getSenders()
-    .find(s => s.track?.kind === "video");
-
+  const sender = pc.getSenders().find(s => s.track?.kind === "video");
   sender?.replaceTrack(track);
 
-  screenStream?.getTracks().forEach(t => t.stop());
-  screenStream = null;
+  localVideo.srcObject = screenStream;
 
-  localStream = cam;
-  localVideo.srcObject = cam;
-}
+  track.onended = async () => {
+    const cam = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
 
-// ===================== BOOTSTRAP (🔥 CRITICAL FIX)
+    const t = cam.getVideoTracks()[0];
+    sender?.replaceTrack(t);
+
+    screenStream = null;
+    localStream = cam;
+    localVideo.srcObject = cam;
+  };
+};
+
+// BOOT
 document.addEventListener("click", start, { once: true });
-document.addEventListener("touchstart", start, { once: true });

@@ -1,50 +1,58 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const cors = require("cors");
 const path = require("path");
 
 const app = express();
-app.use(cors());
-
-// client static
-app.use(express.static(path.join(__dirname, "../client")));
-
 const server = http.createServer(app);
 
-// 🔥 ВОТ ЭТО ОБЯЗАТЕЛЬНО
 const io = new Server(server, {
   cors: { origin: "*" }
 });
 
-// 🔥 ТЕПЕРЬ МОЖНО io.on
+// STATIC CLIENT
+app.use(express.static(path.join(__dirname, "../client")));
+
+const rooms = new Map(); // roomId -> users count
+
 io.on("connection", (socket) => {
-  console.log("user connected:", socket.id);
 
   socket.on("join-room", (roomId) => {
     socket.join(roomId);
 
-    const clients = io.sockets.adapter.rooms.get(roomId);
+    const count = (rooms.get(roomId) || 0) + 1;
+    rooms.set(roomId, count);
 
-    if (clients && clients.size === 2) {
+    console.log("JOIN:", roomId, "users:", count);
+
+    // второй пользователь запускает call flow
+    if (count === 2) {
       io.to(roomId).emit("ready-to-call");
     }
   });
 
-  socket.on("offer", (data) => {
-    socket.to(data.roomId).emit("offer", data.offer);
+  socket.on("offer", ({ roomId, offer }) => {
+    socket.to(roomId).emit("offer", offer);
   });
 
-  socket.on("answer", (data) => {
-    socket.to(data.roomId).emit("answer", data.answer);
+  socket.on("answer", ({ roomId, answer }) => {
+    socket.to(roomId).emit("answer", answer);
   });
 
-  socket.on("ice-candidate", (data) => {
-    socket.to(data.roomId).emit("ice-candidate", data.candidate);
+  socket.on("ice-candidate", ({ roomId, candidate }) => {
+    socket.to(roomId).emit("ice-candidate", candidate);
+  });
+
+  socket.on("disconnect", () => {
+    for (const [roomId, count] of rooms.entries()) {
+      const newCount = Math.max(0, count - 1);
+      if (newCount === 0) rooms.delete(roomId);
+      else rooms.set(roomId, newCount);
+    }
   });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 
 server.listen(PORT, () => {
   console.log("SHTORM running on", PORT);
