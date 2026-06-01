@@ -25,19 +25,28 @@ let pendingCandidates = [];
 
 const config = {
   iceServers: [
-    // STUN (обнаружение IP)
     {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302"
-      ]
+      urls: "stun:stun.relay.metered.ca:80",
     },
-
-    // 🔥 ПУБЛИЧНЫЙ TURN (бесплатный fallback)
     {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject"
+      urls: "turn:global.relay.metered.ca:80",
+      username: "364220d702b99621ed50afaf",
+      credential: "1+Wf1HFsEI3FFw4w",
+    },
+    {
+      urls: "turn:global.relay.metered.ca:80?transport=tcp",
+      username: "364220d702b99621ed50afaf",
+      credential: "1+Wf1HFsEI3FFw4w",
+    },
+    {
+      urls: "turn:global.relay.metered.ca:443",
+      username: "364220d702b99621ed50afaf",
+      credential: "1+Wf1HFsEI3FFw4w",
+    },
+    {
+      urls: "turns:global.relay.metered.ca:443?transport=tcp",
+      username: "364220d702b99621ed50afaf",
+      credential: "1+Wf1HFsEI3FFw4w",
     }
   ]
 };
