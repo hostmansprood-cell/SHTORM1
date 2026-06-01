@@ -20,10 +20,24 @@ let peerConnection;
 let localStream;
 let screenStream;
 
+// 🔥 ICE QUEUE FIX
+let pendingCandidates = [];
+
 const config = {
   iceServers: [
+    // STUN (обнаружение IP)
     {
-      urls: "stun:stun.l.google.com:19302"
+      urls: [
+        "stun:stun.l.google.com:19302",
+        "stun:stun1.l.google.com:19302"
+      ]
+    },
+
+    // 🔥 ПУБЛИЧНЫЙ TURN (бесплатный fallback)
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject"
     }
   ]
 };
@@ -50,7 +64,6 @@ if (savedName) {
 
 usernameInput.addEventListener("input", () => {
   const name = usernameInput.value.trim() || "You";
-
   localStorage.setItem("shtorm_username", name);
   localName.innerText = name;
 });
@@ -63,36 +76,40 @@ async function init() {
 
 // MEDIA
 async function startMedia() {
-  try {
-    localStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true
+  });
 
-    localVideo.srcObject = localStream;
+  localVideo.srcObject = localStream;
 
-    peerConnection = new RTCPeerConnection(config);
+  peerConnection = new RTCPeerConnection(config);
 
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
+  // 🔥 DEBUG STATES
+  peerConnection.oniceconnectionstatechange = () => {
+    console.log("ICE:", peerConnection.iceConnectionState);
+  };
 
-    peerConnection.ontrack = (event) => {
-      remoteVideo.srcObject = event.streams[0];
-    };
+  peerConnection.onconnectionstatechange = () => {
+    console.log("CONNECTION:", peerConnection.connectionState);
+  };
 
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("ice-candidate", {
-          roomId,
-          candidate: event.candidate
-        });
-      }
-    };
+  localStream.getTracks().forEach(track => {
+    peerConnection.addTrack(track, localStream);
+  });
 
-  } catch (err) {
-    console.error(err);
-  }
+  peerConnection.ontrack = (event) => {
+    remoteVideo.srcObject = event.streams[0];
+  };
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit("ice-candidate", {
+        roomId,
+        candidate: event.candidate
+      });
+    }
+  };
 }
 
 // SOCKET EVENTS
@@ -106,6 +123,12 @@ socket.on("user-joined", async () => {
 socket.on("offer", async (offer) => {
   await peerConnection.setRemoteDescription(offer);
 
+  // 🔥 apply queued ICE
+  for (const c of pendingCandidates) {
+    await peerConnection.addIceCandidate(c);
+  }
+  pendingCandidates = [];
+
   const answer = await peerConnection.createAnswer();
   await peerConnection.setLocalDescription(answer);
 
@@ -114,11 +137,22 @@ socket.on("offer", async (offer) => {
 
 socket.on("answer", async (answer) => {
   await peerConnection.setRemoteDescription(answer);
+
+  for (const c of pendingCandidates) {
+    await peerConnection.addIceCandidate(c);
+  }
+  pendingCandidates = [];
 });
 
 socket.on("ice-candidate", async (candidate) => {
   try {
-    await peerConnection.addIceCandidate(candidate);
+    const ice = new RTCIceCandidate(candidate);
+
+    if (peerConnection.remoteDescription) {
+      await peerConnection.addIceCandidate(ice);
+    } else {
+      pendingCandidates.push(ice);
+    }
   } catch (err) {
     console.error(err);
   }
@@ -126,111 +160,69 @@ socket.on("ice-candidate", async (candidate) => {
 
 // MUTE
 muteBtn.addEventListener("click", () => {
-  if (!localStream) return;
-
   const audioTrack = localStream.getAudioTracks()[0];
   audioTrack.enabled = !audioTrack.enabled;
-
   muteBtn.innerText = audioTrack.enabled ? "Mute" : "Unmute";
 });
 
 // CAMERA
 cameraBtn.addEventListener("click", () => {
-  if (!localStream) return;
-
   const videoTrack = localStream.getVideoTracks()[0];
   videoTrack.enabled = !videoTrack.enabled;
-
   cameraBtn.innerText = videoTrack.enabled ? "Camera Off" : "Camera On";
 });
 
 // COPY
 copyBtn.addEventListener("click", async () => {
   await navigator.clipboard.writeText(window.location.href);
-
   copyBtn.innerText = "Copied!";
-
-  setTimeout(() => {
-    copyBtn.innerText = "Copy Link";
-  }, 2000);
+  setTimeout(() => (copyBtn.innerText = "Copy Link"), 2000);
 });
 
-// SCREEN SHARE (FIXED TOGGLE VERSION)
+// SCREEN SHARE
 screenBtn.addEventListener("click", async () => {
-  try {
+  if (!screenStream) {
+    screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
 
-    // 👉 включаем экран
-    if (!screenStream) {
-
-      screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true
-      });
-
-      const screenTrack = screenStream.getVideoTracks()[0];
-
-      const sender = peerConnection
-        .getSenders()
-        .find(s => s.track && s.track.kind === "video");
-
-      if (sender) {
-        sender.replaceTrack(screenTrack);
-      }
-
-      localVideo.srcObject = screenStream;
-
-      screenTrack.onended = () => {
-        stopScreenShare();
-      };
-
-      screenBtn.innerText = "Stop Screen";
-
-    } else {
-
-      // 👉 выключаем экран
-      stopScreenShare();
-
-    }
-
-  } catch (err) {
-    console.error(err);
-  }
-});
-
-// STOP SCREEN SHARE (FIXED RESTORE)
-async function stopScreenShare() {
-  try {
-
-    if (!peerConnection) return;
-
-    const cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true
-    });
-
-    const cameraTrack = cameraStream.getVideoTracks()[0];
+    const screenTrack = screenStream.getVideoTracks()[0];
 
     const sender = peerConnection
       .getSenders()
       .find(s => s.track && s.track.kind === "video");
 
-    if (sender) {
-      sender.replaceTrack(cameraTrack);
-    }
+    sender?.replaceTrack(screenTrack);
 
-    if (screenStream) {
-      screenStream.getTracks().forEach(t => t.stop());
-    }
+    localVideo.srcObject = screenStream;
 
-    screenStream = null;
+    screenTrack.onended = stopScreenShare;
 
-    localStream = cameraStream;
-    localVideo.srcObject = cameraStream;
-
-    screenBtn.innerText = "Screen";
-
-  } catch (err) {
-    console.error(err);
+    screenBtn.innerText = "Stop Screen";
+  } else {
+    stopScreenShare();
   }
+});
+
+async function stopScreenShare() {
+  const cameraStream = await navigator.mediaDevices.getUserMedia({
+    video: true,
+    audio: true
+  });
+
+  const cameraTrack = cameraStream.getVideoTracks()[0];
+
+  const sender = peerConnection
+    .getSenders()
+    .find(s => s.track && s.track.kind === "video");
+
+  sender?.replaceTrack(cameraTrack);
+
+  screenStream?.getTracks().forEach(t => t.stop());
+
+  screenStream = null;
+  localStream = cameraStream;
+  localVideo.srcObject = cameraStream;
+
+  screenBtn.innerText = "Screen";
 }
 
 // START
