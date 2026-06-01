@@ -20,14 +20,14 @@ let peerConnection;
 let localStream;
 let screenStream;
 
-// 🔥 ICE QUEUE FIX
+// ICE queue (fix)
 let pendingCandidates = [];
 
+// CONFIG (TURN + STUN)
 const config = {
   iceServers: [
-    {
-      urls: "stun:stun.relay.metered.ca:80",
-    },
+    { urls: "stun:stun.relay.metered.ca:80" },
+
     {
       urls: "turn:global.relay.metered.ca:80",
       username: "364220d702b99621ed50afaf",
@@ -53,7 +53,6 @@ const config = {
 
 // ROOM
 const params = new URLSearchParams(window.location.search);
-
 let roomId = params.get("room");
 
 if (!roomId) {
@@ -83,7 +82,7 @@ async function init() {
   socket.emit("join-room", roomId);
 }
 
-// MEDIA
+// MEDIA + PEER
 async function startMedia() {
   localStream = await navigator.mediaDevices.getUserMedia({
     video: true,
@@ -94,13 +93,28 @@ async function startMedia() {
 
   peerConnection = new RTCPeerConnection(config);
 
-  // 🔥 DEBUG STATES
+  // DEBUG STATES
   peerConnection.oniceconnectionstatechange = () => {
     console.log("ICE:", peerConnection.iceConnectionState);
   };
 
   peerConnection.onconnectionstatechange = () => {
     console.log("CONNECTION:", peerConnection.connectionState);
+  };
+
+  peerConnection.onicegatheringstatechange = () => {
+    console.log("ICE gathering:", peerConnection.iceGatheringState);
+  };
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      console.log("CANDIDATE:", event.candidate.candidate);
+
+      socket.emit("ice-candidate", {
+        roomId,
+        candidate: event.candidate
+      });
+    }
   };
 
   localStream.getTracks().forEach(track => {
@@ -110,18 +124,10 @@ async function startMedia() {
   peerConnection.ontrack = (event) => {
     remoteVideo.srcObject = event.streams[0];
   };
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit("ice-candidate", {
-        roomId,
-        candidate: event.candidate
-      });
-    }
-  };
 }
 
 // SOCKET EVENTS
+
 socket.on("user-joined", async () => {
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
@@ -130,11 +136,17 @@ socket.on("user-joined", async () => {
 });
 
 socket.on("offer", async (offer) => {
-  await peerConnection.setRemoteDescription(offer);
+  if (!peerConnection.remoteDescription) {
+    await peerConnection.setRemoteDescription(offer);
+  }
 
-  // 🔥 apply queued ICE
+  // flush ICE queue
   for (const c of pendingCandidates) {
-    await peerConnection.addIceCandidate(c);
+    try {
+      await peerConnection.addIceCandidate(c);
+    } catch (e) {
+      console.error(e);
+    }
   }
   pendingCandidates = [];
 
@@ -148,12 +160,18 @@ socket.on("answer", async (answer) => {
   await peerConnection.setRemoteDescription(answer);
 
   for (const c of pendingCandidates) {
-    await peerConnection.addIceCandidate(c);
+    try {
+      await peerConnection.addIceCandidate(c);
+    } catch (e) {
+      console.error(e);
+    }
   }
   pendingCandidates = [];
 });
 
 socket.on("ice-candidate", async (candidate) => {
+  if (!peerConnection) return;
+
   try {
     const ice = new RTCIceCandidate(candidate);
 
